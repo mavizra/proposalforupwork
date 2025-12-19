@@ -164,4 +164,50 @@ export const listingsMockUtils = {
 		}
 
 		// Sorting
-		switch (filte
+		switch (filters.sort) {
+			case "price_asc":
+				results.sort((a, b) => a.price - b.price);
+				break;
+			case "price_desc":
+				results.sort((a, b) => b.price - a.price);
+				break;
+			case "area_desc":
+				results.sort((a, b) => (b.area_m2 || 0) - (a.area_m2 || 0));
+				break;
+			case "newest":
+				results.sort(
+					(a, b) =>
+						new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime(),
+				);
+				break;
+			default:
+				// no-op
+				break;
+		}
+
+		return Response.json({
+			listings: results,
+			source: "mock",
+		});
+	},
+
+	/**
+	 * Generates mock listing detail response
+	 * @param {object} c - Hono context
+	 * @param {string} listingId - Listing ID to fetch
+	 * @returns {Promise<Response>} Mock API response
+	 */
+	getListingDetail: async (c, listingId) => {
+		const listingIdNum = parseInt(listingId, 10);
+		const listing = c.env.MOCK_DATA.find((x) => x.id === listingIdNum);
+
+		if (!listing) {
+			return Response.json({ error: "Listing not found" }, { status: 404 });
+		}
+
+		return Response.json({
+			listing,
+			source: "mock",
+		});
+	},
+};
