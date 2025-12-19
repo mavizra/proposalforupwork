@@ -4,7 +4,7 @@
  *
  * Optional override via query param:
  *   ?source=mock  forces mock
- *   ?source=db    forces db (will error if dbLogic fails)
+ *   ?source=db    forces db (will error if dbLogic fails / db unavailable)
  *
  * @param {object} c - Hono context
  * @param {function} dbLogic - Function to execute when DB is available
@@ -12,22 +12,29 @@
  * @returns {Promise<Response>} API response
  */
 export async function selectDataSource(c, dbLogic, mockLogic) {
-	const sourceParam =
-		(typeof c.req.query === "function" && c.req.query("source")) ||
-		(typeof c.req.query === "function" && c.req.query()?.source);
+	const queryObj =
+		typeof c?.req?.query === "function" ? c.req.query() : {};
+	const sourceParam = queryObj?.source;
+
+	const dbAvailable =
+		Boolean(c?.env?.DB_AVAILABLE) && Boolean(c?.env?.SQL || c?.env?.DB);
 
 	if (sourceParam === "mock") {
 		return await mockLogic(c);
 	}
 
 	if (sourceParam === "db") {
+		if (!dbAvailable) {
+			return Response.json(
+				{ error: "Database not available", source: "db" },
+				{ status: 503 },
+			);
+		}
 		return await dbLogic(c);
 	}
 
-	// Support either env.SQL (your earlier route example) or env.DB (common CF patterns)
-	const hasDb = Boolean(c?.env && (c.env.SQL || c.env.DB));
-
-	if (!hasDb) {
+	// Default behavior
+	if (!dbAvailable) {
 		return await mockLogic(c);
 	}
 
@@ -75,7 +82,8 @@ export const listingRelatedMockUtils = {
 			.filter((x) => x.id !== listingIdNum)
 			.sort(
 				(a, b) =>
-					Math.abs(a.price - listing.price) - Math.abs(b.price - listing.price),
+					Math.abs(a.price - listing.price) -
+					Math.abs(b.price - listing.price),
 			)
 			.slice(0, 3);
 
@@ -127,7 +135,9 @@ export const listingsMockUtils = {
 		const q = (filters.q || "").toString().trim().toLowerCase();
 		if (q) {
 			results = results.filter((x) =>
-				`${x.title} ${x.city} ${x.address || ""} ${x.type}`.toLowerCase().includes(q),
+				`${x.title} ${x.city} ${x.address || ""} ${x.type}`
+					.toLowerCase()
+					.includes(q),
 			);
 		}
 
@@ -140,11 +150,16 @@ export const listingsMockUtils = {
 		}
 
 		const minPrice =
-			filters.minPrice !== undefined && filters.minPrice !== null && filters.minPrice !== ""
+			filters.minPrice !== undefined &&
+			filters.minPrice !== null &&
+			filters.minPrice !== ""
 				? Number(filters.minPrice)
 				: null;
+
 		const maxPrice =
-			filters.maxPrice !== undefined && filters.maxPrice !== null && filters.maxPrice !== ""
+			filters.maxPrice !== undefined &&
+			filters.maxPrice !== null &&
+			filters.maxPrice !== ""
 				? Number(filters.maxPrice)
 				: null;
 
@@ -156,9 +171,12 @@ export const listingsMockUtils = {
 		}
 
 		const beds =
-			filters.beds !== undefined && filters.beds !== null && filters.beds !== ""
+			filters.beds !== undefined &&
+			filters.beds !== null &&
+			filters.beds !== ""
 				? Number(filters.beds)
 				: null;
+
 		if (beds !== null && !Number.isNaN(beds)) {
 			results = results.filter((x) => Number(x.beds || 0) >= beds);
 		}
@@ -171,13 +189,17 @@ export const listingsMockUtils = {
 			case "price_desc":
 				results.sort((a, b) => b.price - a.price);
 				break;
+			case "area_asc":
+				results.sort((a, b) => (a.area_m2 || 0) - (b.area_m2 || 0));
+				break;
 			case "area_desc":
 				results.sort((a, b) => (b.area_m2 || 0) - (a.area_m2 || 0));
 				break;
 			case "newest":
 				results.sort(
 					(a, b) =>
-						new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime(),
+						new Date(b.created_at || 0).getTime() -
+						new Date(a.created_at || 0).getTime(),
 				);
 				break;
 			default:
