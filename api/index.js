@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import postgres from "postgres";
 import listingsRouter from "./routes/listings";
 import listingRelatedRouter from "./routes/listing-related";
-import { mockBooks as mockListings } from "./lib/mockData";
+import { mockListings } from "./lib/mockData";
 
 const app = new Hono();
 
