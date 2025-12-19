@@ -1,146 +1,167 @@
 /**
  * Selects appropriate data source based on database availability
+ * Falls back to mock logic if DB logic fails or DB is unavailable.
+ *
+ * Optional override via query param:
+ *   ?source=mock  forces mock
+ *   ?source=db    forces db (will error if dbLogic fails)
+ *
  * @param {object} c - Hono context
  * @param {function} dbLogic - Function to execute when DB is available
  * @param {function} mockLogic - Function to execute when using mock data
- * @returns {Response} API response
+ * @returns {Promise<Response>} API response
  */
 export async function selectDataSource(c, dbLogic, mockLogic) {
-	try {
-		// Use mock data if database is not available
-		if (!c.env.DB_AVAILABLE) {
-			return await mockLogic(c);
-		}
+	const sourceParam =
+		(typeof c.req.query === "function" && c.req.query("source")) ||
+		(typeof c.req.query === "function" && c.req.query()?.source);
 
-		// Use database if available
+	if (sourceParam === "mock") {
+		return await mockLogic(c);
+	}
+
+	if (sourceParam === "db") {
 		return await dbLogic(c);
-	} catch (e) {
-		console.error("API Error:", e);
-		return Response.json(
-			{ error: e instanceof Error ? e.message : e },
-			{ status: 500 },
-		);
+	}
+
+	// Support either env.SQL (your earlier route example) or env.DB (common CF patterns)
+	const hasDb = Boolean(c?.env && (c.env.SQL || c.env.DB));
+
+	if (!hasDb) {
+		return await mockLogic(c);
+	}
+
+	try {
+		return await dbLogic(c);
+	} catch (err) {
+		console.error("DB logic failed, falling back to mock data:", err);
+		return await mockLogic(c);
 	}
 }
 
 /**
- * Contains mock data logic functions for book-related endpoints
+ * Contains mock data logic functions for listing-related endpoints
  */
-export const bookRelatedMockUtils = {
+export const listingRelatedMockUtils = {
 	/**
-	 * Generates mock related books response
+	 * Generates mock related listings response
 	 * @param {object} c - Hono context
-	 * @param {string} bookId - Book ID to fetch related data for
-	 * @returns {Response} Mock API response
+	 * @param {string} listingId - Listing ID to fetch related data for
+	 * @returns {Promise<Response>} Mock API response
 	 */
-	getRelatedBookData: async (c, bookId) => {
-		const bookIdNum = parseInt(bookId, 10);
-		const book = c.env.MOCK_DATA.find((book) => book.id === bookIdNum);
+	getRelatedListingData: async (c, listingId) => {
+		const listingIdNum = parseInt(listingId, 10);
+		const listing = c.env.MOCK_DATA.find((x) => x.id === listingIdNum);
 
-		if (!book) {
-			return Response.json({ error: "Book not found" }, { status: 404 });
+		if (!listing) {
+			return Response.json({ error: "Listing not found" }, { status: 404 });
 		}
 
-		const bookGenre = book.genre;
+		const listingCity = listing.city;
+		const listingType = listing.type;
 
-		// Generate mock related data
-		const relatedBooks = c.env.MOCK_DATA.filter(
-			(b) => b.genre === bookGenre && b.id !== bookIdNum,
+		// Same city
+		const relatedInCity = c.env.MOCK_DATA.filter(
+			(x) => x.city === listingCity && x.id !== listingIdNum,
 		).slice(0, 3);
 
-		// Generate mock recent books
-		const recentBooks = c.env.MOCK_DATA.filter((b) => b.id !== bookIdNum).slice(
-			0,
-			2,
-		);
+		// Same type
+		const relatedByType = c.env.MOCK_DATA.filter(
+			(x) => x.type === listingType && x.id !== listingIdNum,
+		).slice(0, 3);
 
-		// Generate mock genre counts
-		const genres = {};
-		c.env.MOCK_DATA.forEach((b) => {
-			genres[b.genre] = (genres[b.genre] || 0) + 1;
+		// Similar price
+		const similarPrice = c.env.MOCK_DATA
+			.filter((x) => x.id !== listingIdNum)
+			.sort(
+				(a, b) =>
+					Math.abs(a.price - listing.price) - Math.abs(b.price - listing.price),
+			)
+			.slice(0, 3);
+
+		// City counts
+		const cities = {};
+		c.env.MOCK_DATA.forEach((x) => {
+			cities[x.city] = (cities[x.city] || 0) + 1;
 		});
+		const cityStats = Object.entries(cities)
+			.map(([city, count]) => ({ city, count }))
+			.sort((a, b) => b.count - a.count);
 
-		const genreCounts = Object.entries(genres)
-			.map(([genre, count]) => ({
-				genre,
-				count,
-			}))
+		// Type counts
+		const types = {};
+		c.env.MOCK_DATA.forEach((x) => {
+			types[x.type] = (types[x.type] || 0) + 1;
+		});
+		const typeStats = Object.entries(types)
+			.map(([type, count]) => ({ type, count }))
 			.sort((a, b) => b.count - a.count);
 
 		return Response.json({
-			bookId: bookId,
-			bookGenre: bookGenre,
-			relatedBooks,
-			recentRecommendations: recentBooks,
-			genreStats: genreCounts,
+			listingId,
+			listingCity,
+			listingType,
+			relatedInCity,
+			relatedByType,
+			similarPrice,
+			cityStats,
+			typeStats,
 			source: "mock",
 		});
 	},
 };
 
 /**
- * Contains mock data logic functions for books endpoints
+ * Contains mock data logic functions for listings endpoints
  */
-export const booksMockUtils = {
+export const listingsMockUtils = {
 	/**
-	 * Generates mock books list with optional filtering and sorting
+	 * Generates mock listings list with optional filtering and sorting
 	 * @param {object} c - Hono context
-	 * @param {string} genre - Optional genre filter
-	 * @param {string} sort - Optional sort parameter
-	 * @returns {Response} Mock API response
+	 * @param {object} filters - Optional filters
+	 * @returns {Promise<Response>} Mock API response
 	 */
-	getBooksList: async (c, genre, sort) => {
+	getListingsList: async (c, filters = {}) => {
 		let results = [...c.env.MOCK_DATA];
 
-		// Apply genre filter if provided
-		if (genre) {
-			results = results.filter((book) => book.genre === genre);
+		const q = (filters.q || "").toString().trim().toLowerCase();
+		if (q) {
+			results = results.filter((x) =>
+				`${x.title} ${x.city} ${x.address || ""} ${x.type}`.toLowerCase().includes(q),
+			);
 		}
 
-		// Apply sorting if provided
-		if (sort) {
-			switch (sort) {
-				case "title_asc":
-					results.sort((a, b) => a.title.localeCompare(b.title));
-					break;
-				case "title_desc":
-					results.sort((a, b) => b.title.localeCompare(a.title));
-					break;
-				case "author_asc":
-					results.sort((a, b) => a.author.localeCompare(b.author));
-					break;
-				case "author_desc":
-					results.sort((a, b) => b.author.localeCompare(a.author));
-					break;
-				default:
-					// Default sort, no change needed
-					break;
-			}
+		if (filters.city) {
+			results = results.filter((x) => x.city === filters.city);
 		}
 
-		return Response.json({
-			books: results,
-			source: "mock",
-		});
-	},
-
-	/**
-	 * Generates mock book detail response
-	 * @param {object} c - Hono context
-	 * @param {string} bookId - Book ID to fetch
-	 * @returns {Response} Mock API response
-	 */
-	getBookDetail: async (c, bookId) => {
-		const bookIdNum = parseInt(bookId, 10);
-		const book = c.env.MOCK_DATA.find((book) => book.id === bookIdNum);
-
-		if (!book) {
-			return Response.json({ error: "Book not found" }, { status: 404 });
+		if (filters.type) {
+			results = results.filter((x) => x.type === filters.type);
 		}
 
-		return Response.json({
-			book,
-			source: "mock",
-		});
-	},
-};
+		const minPrice =
+			filters.minPrice !== undefined && filters.minPrice !== null && filters.minPrice !== ""
+				? Number(filters.minPrice)
+				: null;
+		const maxPrice =
+			filters.maxPrice !== undefined && filters.maxPrice !== null && filters.maxPrice !== ""
+				? Number(filters.maxPrice)
+				: null;
+
+		if (minPrice !== null && !Number.isNaN(minPrice)) {
+			results = results.filter((x) => x.price >= minPrice);
+		}
+		if (maxPrice !== null && !Number.isNaN(maxPrice)) {
+			results = results.filter((x) => x.price <= maxPrice);
+		}
+
+		const beds =
+			filters.beds !== undefined && filters.beds !== null && filters.beds !== ""
+				? Number(filters.beds)
+				: null;
+		if (beds !== null && !Number.isNaN(beds)) {
+			results = results.filter((x) => Number(x.beds || 0) >= beds);
+		}
+
+		// Sorting
+		switch (filte
